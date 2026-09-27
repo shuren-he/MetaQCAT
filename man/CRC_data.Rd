@@ -5,7 +5,7 @@
 \alias{CRC_data}
 \title{Datasets from two metagenomics studies of colorectal cancer (CRC)}
 \format{
-An object of class \code{list} of length 3.
+An object of class \code{list} of length 6.
 }
 \source{
 \url{https://github.com/zellerlab/crc_meta}
