@@ -1,7 +1,5 @@
 # Documentation for the CRC and IBD package datasets.
-# Place this file in the package's R/ directory instead of the two old
-# documentation files. One source file generates two linked help topics.
-# Place only CRC_data.rda and IBD_data.rda in the package's data/ directory.
+# One source file generates two linked help topics.
 
 #' Age-stratified IBD microbiome data
 #'

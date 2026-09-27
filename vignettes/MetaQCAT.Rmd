@@ -1,0 +1,636 @@
+---
+title: "MetaQCAT: microbiome meta-analysis across studies"
+author: "Shuren He"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+    css: metaqcat.css
+    fig_caption: true
+    mathjax: null
+vignette: >
+  %\VignetteIndexEntry{MetaQCAT: microbiome meta-analysis across studies}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE, comment = "#>", fig.width = 8, fig.height = 4.5,
+  fig.align = "center", dpi = 140, message = FALSE,
+  error = FALSE, cache = FALSE
+)
+options(width = 88)
+library(MetaQCAT)
+data("CRC_data", package = "MetaQCAT")
+data("IBD_data", package = "MetaQCAT")
+```
+
+<div class="lead">
+A practical guide to composition association tests, study-specific covariates,
+and subject-level clustering, with the packaged CRC and IBD datasets.
+</div>
+
+<div class="workflow">
+<div><b>01 · Prepare</b><span>Counts, covariates, taxonomy, and sample alignment</span></div>
+<div><b>02 · Choose</b><span>Fixed or random effects; composition or zero patterns</span></div>
+<div><b>03 · Fit</b><span>Independent samples or within-study clusters</span></div>
+<div><b>04 · Report</b><span>Lineage p-values, multiplicity, and reproducibility</span></div>
+</div>
+
+# What MetaQCAT tests
+
+`MetaQCAT()` combines microbiome association information across studies.
+This release is built from MetaPALM, with consistent argument names and
+checked R/C++ interfaces. Its input is a list of **sample-by-taxon count matrices**, accompanied by
+covariate matrices and, when needed, subject identifiers. A taxonomy matrix
+defines the lineages to be tested.
+
+For example, a family-to-genus taxonomy asks whether the **composition of
+genera within each family** is associated with disease. This is not the same
+question as testing the total abundance of a family relative to the whole
+microbiome. Interpret the result at the level of the composition being tested.
+
+| Method | Information used | Calibration |
+|:--|:--|:--|
+| `FE-MetaQCAT` | Composition; common-effect component | Asymptotic or resampling |
+| `FE-MetaQCAT*` | Zero patterns | Asymptotic or resampling |
+| `FE-MetaQCAT-O` | Cauchy combination of the FE components | Asymptotic or resampling |
+| `RE-MetaQCAT` | Composition plus an effect-heterogeneity component | Resampling required |
+| `RE-MetaQCAT*` | Zero-pattern random-effect component | Resampling required |
+| `RE-MetaQCAT-O` | Cauchy combination of the RE components | Resampling required |
+
+The choice of fixed versus random effects should reflect the scientific
+question and plausible cross-study effect heterogeneity. A significant RE
+result is an association result, not a separate proof of heterogeneity. The
+omnibus methods combine p-values; they do not average coefficient estimates.
+
+<div class="callout">
+<p><strong>Which implementation?</strong> This vignette uses the MetaPALM-based
+release. Its zero-pattern resampling is connected to the exported C++ backend.
+All six methods are exercised below. Successful software execution is not a
+proof of type-I error control: calibration and exchangeability should also be
+assessed for the intended study design.</p>
+</div>
+
+# The two example datasets
+
+```{r load-data}
+library(MetaQCAT)
+data("CRC_data", package = "MetaQCAT")
+data("IBD_data", package = "MetaQCAT")
+
+names(CRC_data)
+names(IBD_data)
+```
+
+Both `.rda` files store one named list. Common field names are consistent,
+but the datasets retain their actual study designs rather than inventing
+covariates or clusters merely to make their structures identical.
+
+| Field | CRC | IBD |
+|:--|:--|:--|
+| `counts` | Five count matrices | Ten count matrices |
+| `metadata` | Original CRC sample metadata | Original IBD metadata and derived study labels |
+| `disease` | One column: CRC = 1, control = 0 | One column: CD/UC = 1, control = 0 |
+| `design` | Not stored; use `disease` directly | Disease followed by study-specific covariates |
+| `subject_ids` | `NULL`; independent-sample analysis | Subject factors for repeated samples |
+| `taxonomy` | Original numeric-prefix annotations | Original `k__` through `g__` annotations |
+| `adjust` | Zero-column matrices | Adjustment columns of `design` |
+
+CRC contains 573 samples (283 cases and 290 controls). IBD contains 3,472
+samples in ten analysis strata. HMP2 is split at age 18; MucosalIBD is retained
+as one study. The package data are already prevalence-filtered within each
+study. See `?CRC_data` and `?IBD_data` for exact preprocessing and covariate
+coding, including how missing values were handled.
+
+## Summarize study sizes
+
+```{r study-summary}
+study_summary <- function(d) {
+  data.frame(
+    study = names(d$counts),
+    samples = vapply(d$counts, nrow, integer(1)),
+    cases = vapply(d$disease, function(x) sum(x[, 1] == 1), integer(1)),
+    controls = vapply(d$disease, function(x) sum(x[, 1] == 0), integer(1)),
+    taxa = vapply(d$counts, ncol, integer(1)),
+    row.names = NULL
+  )
+}
+crc_summary <- study_summary(CRC_data)
+ibd_summary <- study_summary(IBD_data)
+knitr::kable(crc_summary, caption = "CRC studies after preprocessing")
+knitr::kable(ibd_summary, caption = "IBD analysis strata after preprocessing")
+```
+
+```{r cohort-figure, echo=FALSE, fig.height=6, fig.cap="Case/control sample counts by analysis study. Repeated IBD samples are not independent participants."}
+local({
+  old <- par(no.readonly = TRUE)
+  on.exit({ layout(1); par(old) })
+  layout(matrix(c(1, 2, 3, 3), nrow = 2, byrow = TRUE), heights = c(9, 1))
+  par(las = 1, family = "sans", cex.main = 1,
+      col.axis = "#465b68", col.lab = "#213342")
+  draw <- function(s, title, labels) {
+    values <- rbind(Control = s$controls, Case = s$cases)
+    barplot(values[, rev(seq_len(ncol(values))), drop = FALSE],
+            horiz = TRUE, names.arg = rev(labels), border = NA,
+            col = c("#88b9c6", "#087f8c"), cex.names = 0.75,
+            main = title, xlab = "Samples", space = 0.5)
+  }
+  par(mar = c(4, 4, 3, 1))
+  draw(crc_summary, "CRC · independent samples", crc_summary$study)
+  par(mar = c(4, 10, 3, 1))
+  labels <- c("CS-PRISM biopsy", "CS-PRISM stool", "Herfarth stool",
+              "HMP2 adult biopsy", "HMP2 pediatric biopsy", "Jansson stool",
+              "MucosalIBD biopsy", "Pouchitis biopsy", "RISK biopsy", "RISK stool")
+  draw(ibd_summary, "IBD · repeated samples", labels)
+  par(mar = c(0, 0, 0, 0))
+  plot.new()
+  legend("center", c("Control", "Case"), fill = c("#88b9c6", "#087f8c"),
+         border = NA, bty = "n", horiz = TRUE, cex = 0.9)
+})
+```
+
+# Prepare inputs correctly
+
+## Counts and covariates
+
+Supply raw count matrices, not percentages or log-transformed abundances.
+Rows of `counts[[i]]` and `X[[i]]` must refer to the same samples in the same
+order. Taxon columns may differ between studies, but their names must be
+unique and covered by the taxonomy. Do not replace missing measurements with
+zeros merely to satisfy input requirements.
+
+`X` is a conventional statistical design-matrix name. **Do not add an
+intercept**: MetaQCAT adds it internally. `X.index` refers to your input
+columns, before that intercept is added.
+
+```{r input-checks}
+for (s in names(CRC_data$counts)) {
+  stopifnot(
+    identical(rownames(CRC_data$counts[[s]]),
+              rownames(CRC_data$disease[[s]])),
+    all(colnames(CRC_data$counts[[s]]) %in% rownames(CRC_data$taxonomy)),
+    all(is.finite(CRC_data$counts[[s]])),
+    !anyNA(CRC_data$disease[[s]])
+  )
+}
+
+colnames(IBD_data$design[["HMP2.adult.biopsy"]])
+colnames(IBD_data$design[["MucosalIBD.biopsy"]])
+```
+
+With `X = IBD_data$design`, `X.index = 1` tests disease while retaining
+the remaining columns as adjustment covariates. To test several variables
+jointly, supply a vector of positions, for example `c(1, 2)`, only when those
+positions have the same scientific meaning in every study. Omission of
+`X.index` retains the existing behavior of testing all input columns; specify
+it explicitly for adjusted analyses.
+
+## Define a family-to-genus taxonomy
+
+```{r family-taxonomy}
+crc_tax <- CRC_data$taxonomy[, c("Rank5", "Rank6"), drop = FALSE]
+colnames(crc_tax) <- c("Rank1", "Rank2")
+
+ibd_tax <- IBD_data$taxonomy[, c("Rank5", "Rank6"), drop = FALSE]
+colnames(ibd_tax) <- c("Rank1", "Rank2")
+```
+
+Here `Rank1` means family and `Rank2` means genus in the **analysis taxonomy**.
+The rank numbering is relative to the supplied matrix; it need not start at
+kingdom. Families with only one eligible child genus cannot provide a
+within-family composition contrast. Higher-rank analyses can use more columns
+of the original taxonomy, in higher-to-lower order.
+
+## A small, explicitly filtered teaching subset
+
+The helper below restricts the demonstration to selected families and removes
+samples with zero total count in that restricted composition. It subsets
+counts, covariates, and subject IDs together, avoiding sample misalignment.
+It is a vignette helper, not another exported package function.
+
+```{r prepare-helper}
+prepare_lineages <- function(d, families, studies = names(d$counts),
+                             adjusted = FALSE) {
+  tax <- d$taxonomy[d$taxonomy[, "Rank5"] %in% families,
+                    c("Rank5", "Rank6"), drop = FALSE]
+  stopifnot(nrow(tax) > 1, all(studies %in% names(d$counts)))
+  colnames(tax) <- c("Rank1", "Rank2")
+  X <- if (adjusted) d$design[studies] else d$disease[studies]
+  stopifnot(length(X) == length(studies))
+  counts <- d$counts[studies]
+  ids <- if (is.null(d$subject_ids)) NULL else d$subject_ids[studies]
+  removed <- setNames(integer(length(studies)), studies)
+  for (s in studies) {
+    y <- counts[[s]][, intersect(colnames(counts[[s]]), rownames(tax)),
+                      drop = FALSE]
+    keep <- rowSums(y) > 0
+    stopifnot(any(keep), ncol(y) > 1)
+    removed[s] <- sum(!keep)
+    counts[[s]] <- y[keep, , drop = FALSE]
+    X[[s]] <- X[[s]][keep, , drop = FALSE]
+    if (!is.null(ids)) ids[[s]] <- factor(ids[[s]][keep])
+    stopifnot(identical(rownames(counts[[s]]), rownames(X[[s]])))
+  }
+  list(counts = counts, X = X, cluster.id = ids,
+       taxonomy = tax, removed = removed)
+}
+```
+
+<div class="callout">
+<p><strong>Demonstration, not a published reanalysis.</strong> Restricting the
+composition changes sample eligibility and, for the zero-part tests, the
+within-study rarefaction depth. The displayed p-values illustrate the workflow;
+they are not substitutes for a prespecified analysis of the full data.</p>
+</div>
+
+# CRC: independent-sample analysis
+
+## Fit the composition test
+
+```{r crc-fit}
+crc_demo <- prepare_lineages(
+  CRC_data,
+  families = c("543 Enterobacteriaceae", "186804 Peptostreptococcaceae")
+)
+crc_demo$removed
+
+crc_fe <- MetaQCAT(
+  counts = crc_demo$counts,
+  X = crc_demo$X,
+  X.index = 1,
+  method = "FE-MetaQCAT",
+  taxonomy = crc_demo$taxonomy,
+  min.depth = 0,
+  min.prev = 0.1,
+  save.coef = TRUE,
+  seed = 1234,
+  n.threads = 1
+)
+stopifnot(length(crc_fe$failed.lineage) == 0L)
+knitr::kable(t(crc_fe$lineage.pval), digits = 5,
+             caption = "Illustrative FE composition tests")
+```
+
+CRC has no separate stored `design`: the one-column disease indicator is the
+complete input `X` for this unadjusted example. Independent samples do not
+require `cluster.id` or a clustered permutation scheme.
+
+## Resampling and random effects
+
+```{r crc-resampling}
+crc_fe_perm <- MetaQCAT(
+  counts = crc_demo$counts, X = crc_demo$X, X.index = 1,
+  method = "FE-MetaQCAT", taxonomy = crc_demo$taxonomy,
+  n.perm = 99, n.threads = 1
+)
+crc_re <- MetaQCAT(
+  counts = crc_demo$counts, X = crc_demo$X, X.index = 1,
+  method = "RE-MetaQCAT", taxonomy = crc_demo$taxonomy,
+  n.perm = 99, n.threads = 1
+)
+knitr::kable(t(crc_fe_perm$lineage.pval), digits = 4)
+knitr::kable(t(crc_re$lineage.pval), digits = 4)
+```
+
+The 99-resample examples keep the vignette fast. They are too coarse for
+fine-grained inference or substantial multiple testing. The implementation
+uses adaptive resampling, so `n.perm` is a requested budget rather than a
+guarantee that every lineage performs exactly that number of draws. Larger
+budgets should be chosen before analysis according to the resolution needed.
+Random-effect methods require a non-`NULL` `n.perm`; no asymptotic RE p-value
+is returned by this interface.
+
+## Zero patterns and the asymptotic omnibus test
+
+```{r crc-zero-omnibus}
+crc_zero <- MetaQCAT(
+  counts = crc_demo$counts, X = crc_demo$X, X.index = 1,
+  method = "FE-MetaQCAT*", taxonomy = crc_demo$taxonomy,
+  n.perm = NULL, n.threads = 1
+)
+crc_omnibus <- MetaQCAT(
+  counts = crc_demo$counts, X = crc_demo$X, X.index = 1,
+  method = "FE-MetaQCAT-O", taxonomy = crc_demo$taxonomy,
+  n.perm = NULL, n.threads = 1
+)
+knitr::kable(t(crc_zero$lineage.pval), digits = 5)
+knitr::kable(t(crc_omnibus$lineage.pval), digits = 5)
+```
+
+Starred tests internally rarefy each study to its minimum retained sample
+depth before constructing zero indicators. Consequently, their zero patterns
+can differ from zeros in the original counts. Very low-depth samples can
+therefore influence the zero-part analysis even when they have nonzero depth.
+By default, the zero component retains taxa with within-study zero proportions
+strictly between 0.1 and 0.9. This is a two-sided variability filter. For
+composition tests, `min.prev = 0.1` retains taxa present in at least 10% of
+samples. An omnibus test can use separate thresholds, e.g.
+`min.prev = c(0.1, 0.05)`.
+
+## Zero-pattern and omnibus resampling
+
+The same interface supports the remaining resampling paths, including the
+random-effect zero and omnibus methods.
+
+```{r crc-all-methods}
+methods <- c("FE-MetaQCAT*", "FE-MetaQCAT-O",
+             "RE-MetaQCAT*", "RE-MetaQCAT-O")
+crc_other <- setNames(lapply(methods, function(m) {
+  fit <- MetaQCAT(
+    counts = crc_demo$counts, X = crc_demo$X, X.index = 1,
+    taxonomy = crc_demo$taxonomy, method = m,
+    min.prev = 0.1, n.perm = 99, seed = 1234
+  )
+  stopifnot(length(fit$failed.lineage) == 0L,
+            all(is.finite(fit$lineage.pval)))
+  fit
+}), methods)
+other_p <- do.call(rbind, lapply(crc_other, function(r)
+  r$lineage.pval[nrow(r$lineage.pval), , drop = FALSE]))
+knitr::kable(other_p, digits = 4,
+             caption = "Zero-pattern and omnibus resampling examples")
+```
+
+All methods use the same study inputs; the zero component rarefies once per
+study per call, rather than once per lineage. Sequential hypergeometric
+sampling avoids expanding every sample into a vector of reads. It has the
+same rarefaction distribution as the earlier read-expansion implementation,
+although exact results for the same seed can differ.
+
+# IBD: covariate adjustment and repeated samples
+
+## Check subject overlap across analysis strata
+
+Cluster identifiers account for dependence **within a study**. They do not
+automatically account for the same participant contributing to multiple study
+lists. The packaged IBD data include analysis strata by sample type and age,
+and some participant identifiers occur in more than one stratum.
+
+```{r overlap-check}
+members <- do.call(rbind, lapply(names(IBD_data$subject_ids), function(s) {
+  data.frame(subject = unique(as.character(IBD_data$subject_ids[[s]])),
+             study = s)
+}))
+overlap <- table(members$subject)
+sum(overlap > 1)
+```
+
+Review overlapping cohorts before a substantive meta-analysis. Do not treat
+biopsy/stool strata from overlapping participants as independent studies merely
+because they have different names. This example uses three biopsy cohorts
+and explicitly verifies that their subject identifiers do not overlap.
+
+## Set up cluster-aware inputs
+
+```{r ibd-inputs}
+ibd_studies <- c("HMP2.adult.biopsy", "MucosalIBD.biopsy", "RISK.biopsy")
+selected_members <- members[members$study %in% ibd_studies, ]
+stopifnot(!anyDuplicated(selected_members$subject))
+
+ibd_demo <- prepare_lineages(
+  IBD_data, families = "f__Neisseriaceae",
+  studies = ibd_studies, adjusted = TRUE
+)
+ibd_demo$removed
+lapply(ibd_demo$X, colnames)
+```
+
+`X` contains disease plus the available adjustment covariates; `X.index = 1`
+targets disease only. `cluster.id` contains factors based on real subject IDs,
+not the covariate matrices. The two objects have different roles and must not
+be interchanged.
+
+## Choose the permutation unit
+
+| Scheme | Appropriate structure | Main check |
+|:--|:--|:--|
+| `"between"` | Tested exposure is constant within each subject/cluster | Cluster-level exchangeability is defensible |
+| `"within"` | Tested exposure varies within subject/cluster | Within-cluster exchanges are defensible |
+
+Disease is constant within subjects in this example, so a within-subject shuffle
+would not change disease labels. We use `"between"`. Covariate adjustment does
+not itself guarantee exchangeability; the permutation scheme must still match
+the study design and scientific null hypothesis.
+
+```{r cluster-label-check}
+for (s in names(ibd_demo$X)) {
+  by_subject <- split(ibd_demo$X[[s]][, "disease"], ibd_demo$cluster.id[[s]])
+  stopifnot(all(vapply(by_subject, function(x) length(unique(x)) == 1,
+                       logical(1))))
+}
+```
+
+## Fit FE and RE composition tests
+
+```{r ibd-fits}
+ibd_fe <- MetaQCAT(
+  counts = ibd_demo$counts, X = ibd_demo$X, X.index = 1,
+  method = "FE-MetaQCAT", taxonomy = ibd_demo$taxonomy,
+  cluster.id = ibd_demo$cluster.id, permute.strata = "between",
+  n.perm = 99, n.threads = 1
+)
+ibd_re <- MetaQCAT(
+  counts = ibd_demo$counts, X = ibd_demo$X, X.index = 1,
+  method = "RE-MetaQCAT", taxonomy = ibd_demo$taxonomy,
+  cluster.id = ibd_demo$cluster.id, permute.strata = "between",
+  n.perm = 99, n.threads = 1
+)
+knitr::kable(t(ibd_fe$lineage.pval), digits = 4)
+knitr::kable(t(ibd_re$lineage.pval), digits = 4)
+```
+
+This is a small instructional subset with low resampling resolution. Interpret
+neither the displayed FE/RE difference nor the 0.05 threshold as a confirmed
+biological finding. A final analysis needs prespecified study inclusion,
+covariate handling, adequate calibration, and sensitivity checks.
+
+# Read, adjust, and visualize results
+
+## Result orientation and BH adjustment
+
+Rows of `lineage.pval` identify calibration/method and columns identify
+lineages. Use `drop = FALSE` when retaining a matrix with one row or column.
+The package's `sig.lineage` applies BH adjustment to returned, nonmissing
+lineage p-values: resampling p-values when requested, otherwise asymptotic ones.
+Failed tests retain named `NA` columns and reasons in `failed.lineage`. The
+BH denominator includes all attempted eligible lineages, including failures;
+failed tests are never declared significant. `lineage.qval` reports the adjusted
+values directly.
+
+```{r results-table}
+p <- crc_fe_perm$lineage.pval["Resampling-FE-MetaQCAT", ]
+results <- data.frame(
+  lineage = names(p),
+  p.value = as.numeric(p),
+  q.value = p.adjust(p, method = "BH"),
+  row.names = NULL
+)
+results <- results[order(results$p.value), ]
+knitr::kable(results, digits = 4)
+crc_fe_perm$sig.lineage
+```
+
+Adjust over the intended testing family, not just a hand-selected subset of
+interesting results. BH-adjusting these two demonstration families is not the
+same as adjusting all families in a full analysis. Repeatedly trying methods,
+rank levels, or preprocessing thresholds also changes the inferential context.
+
+```{r pvalue-figure, echo=FALSE, fig.height=3.8, fig.cap="Illustrative composition p-values for the two CRC teaching lineages. The dashed line is a nominal p = 0.05 reference, not an FDR threshold."}
+local({
+  v <- rbind(
+    FE = crc_fe_perm$lineage.pval["Resampling-FE-MetaQCAT", ],
+    RE = crc_re$lineage.pval["Resampling-RE-MetaQCAT", ]
+  )
+  old <- par(mar = c(5, 5, 2, 1), las = 1, family = "sans")
+  on.exit(par(old))
+  barplot(-log10(pmax(v, .Machine$double.xmin)), beside = TRUE,
+          names.arg = sub("^[0-9]+ ", "", colnames(v)),
+          col = c("#087f8c", "#7896ad"), border = NA,
+          ylab = expression(-log[10](p)), ylim = c(0, 2.4), cex.names = 0.85)
+  abline(h = -log10(0.05), lty = 2, col = "#b37a20")
+  legend("topright", c("FE", "RE"), fill = c("#087f8c", "#7896ad"),
+         border = NA, bty = "n", horiz = TRUE)
+})
+```
+
+## Coefficients and reference taxa
+
+```{r coefficient-structure}
+str(crc_fe$lineage.coef[[1]], max.level = 2)
+```
+
+For the composition component, inspect `reference.taxon` in each lineage
+result before interpreting `est.beta.comp`. Set `save.coef = TRUE` to retain
+coefficients and `var.beta.comp` (variances, not standard errors). Estimates
+are relative to the reference, not absolute taxon abundance changes. Take
+square roots of variances only after checking they are finite and nonnegative.
+The zero-part coefficients concern zero indicators and should not be
+interpreted on the positive-part scale.
+
+# Full analyses and reproducible reporting
+
+The following template uses all CRC genera and the full family-to-genus
+taxonomy. It is shown but **not executed** during vignette building, to avoid
+running an expensive analysis whenever the package is installed or checked.
+
+```{r full-analysis, eval=FALSE}
+crc_full <- MetaQCAT(
+  counts = CRC_data$counts,
+  X = CRC_data$disease,
+  X.index = 1,
+  method = "FE-MetaQCAT",
+  taxonomy = crc_tax,
+  min.depth = 0,
+  min.prev = 0.1,
+  n.perm = 9999,
+  fdr.alpha = 0.05,
+  n.threads = 1
+)
+
+saveRDS(crc_full, file = "CRC_FE_results.rds")
+write.csv(t(crc_full$lineage.pval), "CRC_FE_pvalues.csv")
+capture.output(sessionInfo(), file = "CRC_sessionInfo.txt")
+```
+
+The resampling budget above is a template, not a universal recommendation.
+Record dataset versions, exclusions, taxonomic ranks, tested variables,
+adjustment sets, cluster definitions, permutation scheme, method, thresholds,
+package/R versions, and resampling settings. Pass `seed` explicitly to control
+rarefaction and resampling. Each lineage uses the supplied seed so that worker
+scheduling does not change the result. To use independent random streams across
+simulation replicates, provide different seeds for different calls.
+
+For a single composition-wide test, omit taxonomy (`taxonomy = NULL`) and read
+`fit$pvalue.comp`, `fit$pvalue.pa`, or `fit$pvalue.comb` rather than
+`fit$lineage.pval` (depending on the selected method). Its scope is the entire supplied
+composition, not a collection of lineage tests.
+
+# Parameter reference and troubleshooting
+
+## Release parameter names
+
+```{r public-arguments}
+args(MetaQCAT)
+```
+
+| Argument | Meaning / default |
+|:--|:--|
+| `counts` | Study-level count matrices |
+| `X` | Study-level covariates; no intercept |
+| `X.index` | Tested input-column indices; specify explicitly |
+| `method` | `"FE-MetaQCAT"` by default |
+| `cluster.id` | Subject/cluster IDs; `NULL` for independent samples |
+| `taxonomy` | Taxonomic hierarchy; `NULL` for a composition-wide test |
+| `min.depth` | Remove depths **less than or equal to** 0 by default |
+| `min.prev` | Minimum prevalence, 0.1; two-sided variability threshold for zero tests |
+| `n.perm` | `NULL`: asymptotic FE only; otherwise adaptive resampling budget |
+| `permute.strata` | `NULL`, `"within"`, or `"between"`, according to design |
+| `fdr.alpha` | BH threshold, 0.05 |
+| `save.coef` | Store descendant coefficients/variances; FALSE |
+| `n.threads` | One process by default |
+| `seed` | Rarefaction/resampling seed; 1234 |
+
+The release does not accept the old argument aliases.
+
+| MetaPALM name | Release name |
+|:--|:--|
+| `OTU` | `counts` |
+| `Tax` | `taxonomy` |
+| `cluster` / `cluster.list` | `cluster.id` |
+| `meta.method` | `method` |
+| `prev.filter` | `min.prev` |
+| `save.desc` | `save.coef` |
+| `nthreads` | `n.threads` |
+| `Y.list` / `X.list` / `X.par.index` | `counts` / `X` / `X.index` |
+| `Y.bin.list` / `Z.list` / `Z.par.index` | `zeros` / `X` / `X.index` |
+
+`X` and `X.index` retain familiar statistical notation. The six advanced
+`Score_test_*` functions keep their names, but use the same concise arguments.
+They require an intercept in column 1; unlike `MetaQCAT()`, they do not add one.
+Zero-pattern advanced functions take binary zero indicators (1 = zero), not
+raw counts. The default analysis uses the multinomial `Score_test_QCAT_*`
+component; the retained Poisson `Score_test_*` variant is available for method
+development and is not silently substituted into the routine analysis.
+
+Lineage p-value and q-value matrices and failure diagnostics are now returned
+explicitly. Component fields retain MetaPALM's `pvalue.comp`, `pvalue.pa`,
+and `pvalue.comb` conventions; do not assume the result fields of the older
+MetaQCAT implementation.
+
+## Common pitfalls
+
+| Symptom | What to check |
+|:--|:--|
+| Sample/covariate dimension mismatch | Study ordering and sample row names; subset every input together |
+| Singular fit or `svd()` failure | Constant/redundant covariates, missing values, tiny eligible groups, or empty compositions |
+| `class.id` / unused argument error | Use the release name `cluster.id`; never pass `design` as cluster IDs |
+| Few or missing lineage results | Child-taxon eligibility, an available reference, fitting failures, and sparse data |
+| NA columns | Inspect `failed.lineage`; failed tests retain their positions |
+| A within-cluster shuffle has no effect | The tested exposure may be constant within every cluster; reconsider the permutation unit |
+| Unexpected zero-part results | Internal rarefaction, low minimum depth, and zero-feature eligibility |
+| Non-finite permutation statistic | The test fails explicitly; inspect sparse data or degenerate covariance, rather than reporting a p-value |
+| Parallel execution fails on Windows | Use `n.threads = 1`; the backend is fork-based |
+
+An unestimable lineage is not a nonsignificant finding. Do not replace failures
+with `p = 1`, silently drop them from denominators, or interpret error-generated
+values as inference. Preserve the reason for failure and distinguish omitted
+tests from successfully tested lineages.
+
+Routine depth filtering is quiet. Excluding an empty study or failing a
+lineage produces a warning and diagnostics. Keep warnings visible and retain
+`failed.lineage` with the exported results.
+
+```{r help-pages, eval=FALSE}
+help("MetaQCAT", package = "MetaQCAT")
+help("CRC_data", package = "MetaQCAT")
+help("IBD_data", package = "MetaQCAT")
+citation("MetaQCAT")
+```
+
+## Session information
+
+```{r session-info}
+sessionInfo()
+```

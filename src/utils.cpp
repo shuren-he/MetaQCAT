@@ -1,6 +1,7 @@
 
 // [[Rcpp::depends(RcppArmadillo)]]
 #include <RcppArmadillo.h>
+#include <cmath>
 
 arma::uvec within_class_perm_index_map(const arma::uvec &labels){
   const arma::uword n = labels.n_elem;
@@ -118,7 +119,7 @@ Rcpp::List score_test_stat_meta(const Rcpp::List &X_list, const Rcpp::Nullable<R
       arma::mat Hessian_beta_i = Hessian_beta.cols(i*p, (i+1)*p - 1);
       arma::mat Score_reduce_beta_i = Score_reduce_beta.cols(i*p, (i+1)*p - 1);
       arma::mat I1 = Hessian_beta_i(X_par_index_u, X_par_index_u) - Hessian_beta_i(X_par_index_u, X_dis_par_index_u) *
-        arma::pinv(Hessian_beta_i(X_dis_par_index_u, X_dis_par_index_u)) * Hessian_beta_i(X_dis_par_index_u, X_par_index_u);
+                     arma::pinv(Hessian_beta_i(X_dis_par_index_u, X_dis_par_index_u)) * Hessian_beta_i(X_dis_par_index_u, X_par_index_u);
       arma::mat InvI1 = arma::pinv(I1);
       est_beta.col(i) = InvI1 * colsums_Score_beta.cols(idx_i).t();
       arma::mat U_mat(n_par_int, ncate, arma::fill::zeros);
@@ -140,7 +141,7 @@ Rcpp::List score_test_stat_meta(const Rcpp::List &X_list, const Rcpp::Nullable<R
     cov_lst[j] = cov_mat; est_beta_lst[j] = est_beta;
     // score_beta[j] = est_beta;
     // est_cov[j] = cov_mat;
-    if(meta_method == "RE-MetaPALM"){
+    if(meta_method == "RE-MetaQCAT"){
       arma::mat est_inv = arma::pinv(cov_mat);
       arma::vec tmp = est_inv * arma::vectorise(est_beta);
       U_theta = U_theta + 0.5 * arma::as_scalar(tmp.t() * tmp - arma::trace(est_inv));
@@ -150,11 +151,12 @@ Rcpp::List score_test_stat_meta(const Rcpp::List &X_list, const Rcpp::Nullable<R
     est_cov_meta.submat(col_index_u,col_index_u)  += arma::pinv(cov_mat);
     score_stat_beta(col_index_u) = score_stat_beta(col_index_u) + arma::pinv(cov_mat) * arma::vectorise(est_beta);
   }
-  double score_stat_meta = arma::as_scalar(score_stat_beta.t() * arma::pinv(est_cov_meta) * score_stat_beta);
   arma::mat cov_beta_hat = arma::pinv(est_cov_meta);
   arma::vec beta_hat = cov_beta_hat * score_stat_beta;
   arma::vec var_beta_hat = cov_beta_hat.diag();
-  if(meta_method == "RE-MetaPALM"){
+  double score_stat_meta = arma::as_scalar(score_stat_beta.t() * cov_beta_hat * score_stat_beta);
+  if(meta_method == "RE-MetaQCAT"){
+    if (!std::isfinite(V_theta) || V_theta <= 0) Rcpp::stop("Degenerate random-effect covariance.");
     score_stat_meta = score_stat_meta + U_theta * U_theta / V_theta;
     return Rcpp::List::create(Rcpp::Named("score.stat.meta") = score_stat_meta,
                               Rcpp::Named("var.beta.hat") = var_beta_hat,
@@ -216,7 +218,7 @@ double score_test_stat_meta_resampling(const Rcpp::List &X_perm_list, const Rcpp
       arma::mat Hessian_beta_i = Hessian_beta.cols(i*p, (i+1)*p - 1);
       arma::mat Score_reduce_beta_i = Score_reduce_beta.cols(i*p, (i+1)*p - 1);
       arma::mat I1 = Hessian_beta_i(X_par_index_u, X_par_index_u) - Hessian_beta_i(X_par_index_u, X_dis_par_index_u) *
-        arma::pinv(Hessian_beta_i(X_dis_par_index_u, X_dis_par_index_u)) * Hessian_beta_i(X_dis_par_index_u, X_par_index_u);
+                     arma::pinv(Hessian_beta_i(X_dis_par_index_u, X_dis_par_index_u)) * Hessian_beta_i(X_dis_par_index_u, X_par_index_u);
       arma::mat InvI1 = arma::pinv(I1);
       est_beta.col(i) = InvI1 * colsums_Score_beta.cols(idx_i).t();
       arma::mat U_mat(n_par_int, ncate, arma::fill::zeros);
@@ -235,7 +237,7 @@ double score_test_stat_meta_resampling(const Rcpp::List &X_perm_list, const Rcpp
       U_mat_combine.rows(i*n_par_int, (i+1)*n_par_int - 1) = U_mat;
     }
     arma::mat cov_mat = InvI1_combine * (U_mat_combine * U_mat_combine.t()) * InvI1_combine;
-    if(meta_method == "RE-MetaPALM"){
+    if(meta_method == "RE-MetaQCAT"){
       arma::mat est_inv = arma::pinv(cov_mat);
       arma::vec tmp = est_inv * arma::vectorise(est_beta);
       U_theta = U_theta + 0.5 * arma::as_scalar(tmp.t() * tmp - arma::trace(est_inv));
@@ -246,9 +248,10 @@ double score_test_stat_meta_resampling(const Rcpp::List &X_perm_list, const Rcpp
     score_stat_beta(col_index_u) = score_stat_beta(col_index_u) + arma::pinv(cov_mat) * arma::vectorise(est_beta);
   }
   double score_stat_meta_perm = arma::as_scalar(score_stat_beta.t() * arma::pinv(est_cov_meta) * score_stat_beta);
-  if(meta_method == "RE-MetaPALM"){
+  if(meta_method == "RE-MetaQCAT"){
+    if (!std::isfinite(V_theta) || V_theta <= 0) Rcpp::stop("Degenerate random-effect covariance.");
     score_stat_meta_perm = score_stat_meta_perm + U_theta * U_theta / V_theta;
-  }    // for fixed-effect MetaPALM, the score statistics and estimated covariance matrix are calculated as above}
+  }    // for fixed-effect MetaQCAT, the score statistics and estimated covariance matrix are calculated as above}
   return (score_stat_meta_perm);
 }
 
@@ -266,7 +269,7 @@ double resample_pvalue(const Rcpp::List &X_list, const Rcpp::Nullable<Rcpp::List
   unsigned int start_nperm = 1;
   unsigned int end_nperm = (n_replicates < 100)? n_replicates : 100;
   bool flag = true;
-  while(flag & (end_nperm <= n_replicates)){
+  while(flag && (start_nperm <= end_nperm) && (end_nperm <= n_replicates)){
     for(unsigned int k = start_nperm; k <= end_nperm; ++k){
       Rcpp::List X_perm_list(total_num);
       if((!class_flag)||((strata != "within")&(strata != "between"))){
@@ -315,19 +318,21 @@ double resample_pvalue(const Rcpp::List &X_list, const Rcpp::Nullable<Rcpp::List
       }
       double score_stat_meta_perm = score_test_stat_meta_resampling(X_perm_list, cluster_id_list, col_index_list, Y_R_list, Y_I_list,
                                                                     X_par_index, n_par_interest_beta, meta_method);
+      if (!std::isfinite(score_stat_meta_perm)) Rcpp::stop("Non-finite permutation statistic; p-value not computed.");
       n_one += 1;
       if(score_stat_meta_perm >= score_stat_meta){one_acc += 1;}
     }
     if(one_acc < 1){
       start_nperm = end_nperm + 1;
-      end_nperm = (end_nperm + 1) * 100 - 1;
+      end_nperm = std::min(n_replicates, (end_nperm + 1) * 100 - 1);
       flag = true;
     }else if(one_acc < 10){
       start_nperm = end_nperm + 1;
-      end_nperm = (end_nperm + 1) * 10 - 1;
+      end_nperm = std::min(n_replicates, (end_nperm + 1) * 10 - 1);
       flag = true;
     }else{flag = false;}
   }
+  if (n_one == 0) Rcpp::stop("No successful permutations; p-value not computed.");
   double score_Rpvalue = (one_acc + 1.0)/(n_one + 1.0);
   return(score_Rpvalue);
 }
@@ -346,7 +351,7 @@ arma::vec Ei_beta(const arma::mat &X_i, const arma::vec &beta, const unsigned in
 }
 
 void score_summary_beta(const arma::vec &coef_vec, const arma::mat &Y, const arma::mat &X,
-                        arma::mat &Score_reduce_beta, arma::mat &Hessian_beta){
+                         arma::mat &Score_reduce_beta, arma::mat &Hessian_beta){
   unsigned int n = Y.n_rows;
   unsigned int m = Y.n_cols;
   unsigned int p = X.n_cols;
@@ -356,9 +361,9 @@ void score_summary_beta(const arma::vec &coef_vec, const arma::mat &Y, const arm
   for(unsigned int i = 0; i < n; ++i){
     arma::vec Ei_vec = Ei_beta(X.row(i).t(), coef_vec, m, p); // m x 1
     double sum_Ei = arma::sum(Ei_vec);
-    arma::vec Pi_vec = Ei_vec / sum_Ei;
+    arma::vec Pi_vec = Ei_vec / sum_Ei; 
     arma::uvec idx = arma::regspace<arma::uvec>(0, m-1);
-    idx.shed_row(m-1);
+    idx.shed_row(m-1); 
     arma::vec Pi_tmp = Pi_vec.elem(idx);
     arma::vec a = Y.row(i).t();  // m x 1
     arma::vec s = a.elem(idx) - nY(i) * Pi_tmp;  // (m-1) x 1
@@ -370,7 +375,7 @@ void score_summary_beta(const arma::vec &coef_vec, const arma::mat &Y, const arm
 }
 
 // [[Rcpp::export]]
-Rcpp::List score_test_stat_QCAT_meta(const Rcpp::List &X_list, const Rcpp::Nullable<Rcpp::List>& cluster_list, const Rcpp::List& col_index_list,
+Rcpp::List score_test_stat_QCAT_meta(const Rcpp::List &X_list, const Rcpp::Nullable<Rcpp::List>& cluster_list, const Rcpp::List& col_index_list, 
                                      const Rcpp::List &Y_list, const Rcpp::List &coef_List, const arma::vec &X_par_index, const unsigned int n_par_interest_beta,
                                      const std::string &meta_method){
   // return a vector of score statistics with each element corresponding to one subject.
@@ -390,7 +395,7 @@ Rcpp::List score_test_stat_QCAT_meta(const Rcpp::List &X_list, const Rcpp::Nulla
   for(unsigned int j = 0; j < total_num; ++j){
     arma::mat Y = Y_list[j];
     arma::mat X = X_list[j];
-    unsigned int p = X.n_cols;
+    unsigned int p = X.n_cols; 
     unsigned int n = X.n_rows;
     unsigned int m = Y.n_cols;
     unsigned int n_beta = (m-1) * p;
@@ -411,23 +416,23 @@ Rcpp::List score_test_stat_QCAT_meta(const Rcpp::List &X_list, const Rcpp::Nulla
     arma::uvec uidx = arma::conv_to< arma::uvec>::from(arma::vectorise(idx)-1);
     arma::uvec mask = arma::ones<arma::uvec>(n_beta);
     mask.elem(uidx).zeros();
-    arma::uvec compl_uidx = arma::find(mask==1);
+    arma::uvec compl_uidx = arma::find(mask==1); 
 
-    arma::vec coef_vec = coef_List[j];
+    arma::vec coef_vec = coef_List[j]; 
     arma::vec coef_vec_full = arma::zeros(n_beta);
     coef_vec_full(compl_uidx) = coef_vec;
     // score_summary_alpha(coef_vec_full, Y_bin, Z, vA_mat, Vinv_cube,
     //                     VY_mat, Score_reduce_alpha, Hessian_alpha);
-    score_summary_beta(coef_vec_full, Y, X, Score_reduce_beta, Hessian_beta);
+    score_summary_beta(coef_vec_full, Y, X, Score_reduce_beta, Hessian_beta); 
     // vA_lst[j] = vA_mat; Vinv_lst[j] = Vinv_cube; VY_lst[j] = VY_mat;
     arma::mat Score_reduce_beta_reorg = arma::join_rows(Score_reduce_beta.cols(uidx), Score_reduce_beta.cols(compl_uidx));
-    arma::mat Hess_reduce_beta_reorg = arma::join_cols(arma::join_rows(Hessian_beta.submat(uidx, uidx),
-                                                                       Hessian_beta.submat(uidx, compl_uidx)),
-                                                                       arma::join_rows(Hessian_beta.submat(compl_uidx, uidx),
-                                                                                       Hessian_beta.submat(compl_uidx, compl_uidx)));
+    arma::mat Hess_reduce_beta_reorg = arma::join_cols(arma::join_rows(Hessian_beta.submat(uidx, uidx), 
+                                                        Hessian_beta.submat(uidx, compl_uidx)),
+                                                        arma::join_rows(Hessian_beta.submat(compl_uidx, uidx), 
+                                                        Hessian_beta.submat(compl_uidx, compl_uidx)));
 
     unsigned int n_par_interest = uidx.n_elem;
-    arma::span par_idx(0,(n_par_interest-1));
+    arma::span par_idx(0,(n_par_interest-1)); 
     arma::span compl_par_idx(n_par_interest,(n_beta-1));
     arma::rowvec Score_reduce_rowsums = arma::sum(Score_reduce_beta_reorg, 0);
     arma::vec A = Score_reduce_rowsums.cols(par_idx).t();
@@ -460,32 +465,33 @@ Rcpp::List score_test_stat_QCAT_meta(const Rcpp::List &X_list, const Rcpp::Nulla
     }
   }
   arma::mat cov_beta_hat = arma::pinv(est_cov_meta);
-  arma::vec beta_hat_meta = cov_beta_hat * score_stat_beta;
-  arma::vec var_beta_hat_meta = cov_beta_hat.diag();
+  arma::vec beta_hat = cov_beta_hat * score_stat_beta;
+  arma::vec var_beta_hat = cov_beta_hat.diag();
   double score_stat_meta = arma::as_scalar(score_stat_beta.t() * cov_beta_hat * score_stat_beta);
   if(meta_method == "RE-MetaQCAT"){
+    if (!std::isfinite(V_theta) || V_theta <= 0) Rcpp::stop("Degenerate random-effect covariance.");
     score_stat_meta = score_stat_meta + U_theta * U_theta / V_theta;
     return Rcpp::List::create(Rcpp::Named("score.stat.meta") = score_stat_meta,
-                              Rcpp::Named("var.beta.hat") = var_beta_hat_meta,
-                              Rcpp::Named("beta.hat") = beta_hat_meta,
+                              Rcpp::Named("var.beta.hat") = var_beta_hat,
+                              Rcpp::Named("beta.hat") = beta_hat,
                               Rcpp::Named("est.beta.lst") = est_beta_lst,
                               Rcpp::Named("cov.lst") = cov_lst);
   }else{
     double score_pvalue = R::pchisq(score_stat_meta, n_par_interest_beta, 0, 0);
     return Rcpp::List::create(Rcpp::Named("score.stat.meta") = score_stat_meta,
                               Rcpp::Named("score.pvalue") = score_pvalue,
-                              Rcpp::Named("var.beta.hat") = var_beta_hat_meta,
-                              Rcpp::Named("beta.hat") = beta_hat_meta,
+                              Rcpp::Named("var.beta.hat") = var_beta_hat,
+                              Rcpp::Named("beta.hat") = beta_hat,
                               Rcpp::Named("est.beta.lst") = est_beta_lst,
                               Rcpp::Named("cov.lst") = cov_lst);
   }
 }
 
 
-double score_test_stat_QCAT_meta_resampling(const Rcpp::List& X_perm_list, const Rcpp::Nullable<Rcpp::List>& cluster_list,
+double score_test_stat_QCAT_meta_resampling(const Rcpp::List& X_perm_list, const Rcpp::Nullable<Rcpp::List>& cluster_list, 
                                             const Rcpp::List& col_index_list, const Rcpp::List &Y_list, const Rcpp::List &coef_List,
                                             const arma::vec& X_par_index, const unsigned int n_par_interest_beta, const std::string &meta_method){
-
+  
   //alpha.meta.results$vA.lst, alpha.meta.results$Vinv.lst, alpha.meta.results$VY.lst,
   // the total study number
   int total_num = X_perm_list.length();
@@ -496,14 +502,14 @@ double score_test_stat_QCAT_meta_resampling(const Rcpp::List& X_perm_list, const
   arma::mat est_cov_meta(n_par_interest_beta,n_par_interest_beta);
   est_cov_meta.zeros();
   Rcpp::List cid; bool flag = cluster_list.isNotNull();
-  if(flag){cid = cluster_list.get();}
+  if(flag){cid = cluster_list.get();}   
   // create null list to save the results for each study
   Rcpp::List score_alpha(total_num);
   Rcpp::List est_cov(total_num);
   for(unsigned int j = 0; j < total_num; ++j){
     arma::mat Y = Y_list[j];
     arma::mat X_perm = X_perm_list[j];
-    unsigned int p = X_perm.n_cols;
+    unsigned int p = X_perm.n_cols; 
     unsigned int n = X_perm.n_rows;
     unsigned int m = Y.n_cols;
     unsigned int n_beta = (m-1) * p;
@@ -524,23 +530,22 @@ double score_test_stat_QCAT_meta_resampling(const Rcpp::List& X_perm_list, const
     arma::uvec uidx = arma::conv_to< arma::uvec>::from(arma::vectorise(idx)-1);
     arma::uvec mask = arma::ones<arma::uvec>(n_beta);
     mask.elem(uidx).zeros();
-    arma::uvec compl_uidx = arma::find(mask==1);
-
-    arma::vec coef_vec = coef_List[j];
+    arma::uvec compl_uidx = arma::find(mask==1); 
+    arma::vec coef_vec = coef_List[j]; 
     arma::vec coef_vec_full = arma::zeros(n_beta);
     coef_vec_full(compl_uidx) = coef_vec;
     // score_summary_alpha(coef_vec_full, Y_bin, Z, vA_mat, Vinv_cube,
     //                     VY_mat, Score_reduce_alpha, Hessian_alpha);
-    score_summary_beta(coef_vec_full, Y, X_perm, Score_reduce_beta, Hessian_beta);
+    score_summary_beta(coef_vec_full, Y, X_perm, Score_reduce_beta, Hessian_beta); 
     // vA_lst[j] = vA_mat; Vinv_lst[j] = Vinv_cube; VY_lst[j] = VY_mat;
     arma::mat Score_reduce_beta_reorg = arma::join_rows(Score_reduce_beta.cols(uidx), Score_reduce_beta.cols(compl_uidx));
-    arma::mat Hess_reduce_beta_reorg = arma::join_cols(arma::join_rows(Hessian_beta.submat(uidx, uidx),
-                                                                       Hessian_beta.submat(uidx, compl_uidx)),
-                                                                       arma::join_rows(Hessian_beta.submat(compl_uidx, uidx),
-                                                                                       Hessian_beta.submat(compl_uidx, compl_uidx)));
+    arma::mat Hess_reduce_beta_reorg = arma::join_cols(arma::join_rows(Hessian_beta.submat(uidx, uidx), 
+                                                        Hessian_beta.submat(uidx, compl_uidx)),
+                                                        arma::join_rows(Hessian_beta.submat(compl_uidx, uidx), 
+                                                        Hessian_beta.submat(compl_uidx, compl_uidx)));
 
     unsigned int n_par_interest = uidx.n_elem;
-    arma::span par_idx(0,(n_par_interest-1));
+    arma::span par_idx(0,(n_par_interest-1)); 
     arma::span compl_par_idx(n_par_interest,(n_beta-1));
     arma::rowvec Score_reduce_rowsums = arma::sum(Score_reduce_beta_reorg, 0);
     arma::vec A = Score_reduce_rowsums.cols(par_idx).t();
@@ -572,15 +577,16 @@ double score_test_stat_QCAT_meta_resampling(const Rcpp::List& X_perm_list, const
   }
   double score_stat_meta = arma::as_scalar(score_stat_beta.t() * arma::pinv(est_cov_meta) * score_stat_beta);
   if(meta_method == "RE-MetaQCAT"){
+    if (!std::isfinite(V_theta) || V_theta <= 0) Rcpp::stop("Degenerate random-effect covariance.");
     score_stat_meta = score_stat_meta + U_theta * U_theta / V_theta;
   }
   return(score_stat_meta);
 }
 
 // [[Rcpp::export]]
-double resample_QCAT_pvalue(const Rcpp::List& X_list, const Rcpp::Nullable<Rcpp::List>& cluster_list, const Rcpp::List& col_index_list,
-                            const Rcpp::List &Y_list, const Rcpp::List& coef_List, const arma::vec& X_par_index, const double score_stat_meta,
-                            const unsigned int n_par_interest_beta, const unsigned int n_perm, const std::string &meta_method,
+double resample_QCAT_pvalue(const Rcpp::List& X_list, const Rcpp::Nullable<Rcpp::List>& cluster_list, const Rcpp::List& col_index_list, 
+                            const Rcpp::List &Y_list, const Rcpp::List& coef_List, const arma::vec& X_par_index, const double score_stat_meta, 
+                            const unsigned int n_par_interest_beta, const unsigned int n_perm, const std::string &meta_method, 
                             const Rcpp::Nullable<Rcpp::String> &permute_strata){
   std::string strata = permute_strata.isNotNull() ? Rcpp::as<std::string>(permute_strata) : "";
   Rcpp::List cid; bool class_flag = cluster_list.isNotNull();
@@ -591,7 +597,7 @@ double resample_QCAT_pvalue(const Rcpp::List& X_list, const Rcpp::Nullable<Rcpp:
   unsigned int start_nperm = 1;
   unsigned int end_nperm = (n_perm < 100)? n_perm : 100;
   bool flag = true;
-  while(flag & (end_nperm <= n_perm)){
+  while(flag && (start_nperm <= end_nperm) && (end_nperm <= n_perm)){
     for(unsigned int k = start_nperm; k <= end_nperm; ++k){
       Rcpp::List X_perm_list(total_num);
       if((!class_flag)||((strata != "within")&(strata != "between"))){
@@ -638,21 +644,23 @@ double resample_QCAT_pvalue(const Rcpp::List& X_list, const Rcpp::Nullable<Rcpp:
           }
         }
       }
-      double score_stat_meta_perm = score_test_stat_QCAT_meta_resampling(X_perm_list, cluster_list, col_index_list, Y_list,
+      double score_stat_meta_perm = score_test_stat_QCAT_meta_resampling(X_perm_list, cluster_list, col_index_list, Y_list, 
                                                                          coef_List, X_par_index, n_par_interest_beta, meta_method);
+      if (!std::isfinite(score_stat_meta_perm)) Rcpp::stop("Non-finite permutation statistic; p-value not computed.");
       n_one += 1;
       if(score_stat_meta_perm >= score_stat_meta){one_acc += 1;}
     }
     if(one_acc < 1){
       start_nperm = end_nperm + 1;
-      end_nperm = (end_nperm + 1) * 100 - 1;
+      end_nperm = std::min(n_perm, (end_nperm + 1) * 100 - 1);
       flag = true;
     }else if(one_acc < 10){
       start_nperm = end_nperm + 1;
-      end_nperm = (end_nperm + 1) * 10 - 1;
+      end_nperm = std::min(n_perm, (end_nperm + 1) * 10 - 1);
       flag = true;
     }else{flag = false;}
   }
+  if (n_one == 0) Rcpp::stop("No successful permutations; p-value not computed.");
   double score_Rpvalue = (one_acc + 1.0)/(n_one + 1.0);
   return(score_Rpvalue);
 }
@@ -664,7 +672,7 @@ arma::vec Pi_alpha(const arma::mat &X_i, const arma::vec &alpha, const unsigned 
     arma::vec alpha_j = alpha.subvec(j * p, (j + 1) * p - 1);
     double eta = arma::dot(alpha_j, X_i);
     double tmp = std::exp(eta);
-    if (!arma::is_finite(tmp)) {
+    if (!std::isfinite(tmp)) {
       Pi_out(j) = 1.0;
     } else {
       Pi_out(j) = tmp / (1.0 + tmp);
@@ -714,8 +722,8 @@ void score_summary_alpha(const arma::vec &coef_vec, const arma::mat &Y_bin, cons
 
 
 // [[Rcpp::export]]
-Rcpp::List score_test_stat_zero_meta(const Rcpp::List &Z_list, const Rcpp::Nullable<Rcpp::List>& cluster_list,
-                                     const Rcpp::List& col_index_list, const Rcpp::List &Y_bin_list, const Rcpp::List &coef_List,
+Rcpp::List score_test_stat_zero_meta(const Rcpp::List &Z_list, const Rcpp::Nullable<Rcpp::List>& cluster_list, 
+                                     const Rcpp::List& col_index_list, const Rcpp::List &Y_bin_list, const Rcpp::List &coef_List, 
                                      const arma::vec &Z_par_index, const unsigned int n_par_interest_alpha,
                                      const std::string &meta_method){
   // return a vector of score statistics with each element corresponding to one subject.
@@ -727,15 +735,15 @@ Rcpp::List score_test_stat_zero_meta(const Rcpp::List &Z_list, const Rcpp::Nulla
   Rcpp::List cid;
   bool flag = cluster_list.isNotNull();
   if(flag){cid = cluster_list.get();}
-  Rcpp::List cov_lst(total_num);
-  Rcpp::List est_alpha_lst(total_num);
-  // Rcpp::List vA_lst(total_num);
-  // Rcpp::List Vinv_lst(total_num);
-  // Rcpp::List VY_lst(total_num);
+  Rcpp::List cov_lst(total_num); 
+  Rcpp::List est_alpha_lst(total_num);   
+  // Rcpp::List vA_lst(total_num); 
+  // Rcpp::List Vinv_lst(total_num); 
+  // Rcpp::List VY_lst(total_num); 
   for(unsigned int j = 0; j < total_num; ++j){
     arma::mat Y_bin = Y_bin_list[j];
     arma::mat Z = Z_list[j];
-    unsigned int p = Z.n_cols;
+    unsigned int p = Z.n_cols; 
     unsigned int n = Z.n_rows;
     unsigned int m = Y_bin.n_cols;
     unsigned int n_alpha = m * p;
@@ -756,23 +764,23 @@ Rcpp::List score_test_stat_zero_meta(const Rcpp::List &Z_list, const Rcpp::Nulla
     arma::uvec uidx = arma::conv_to< arma::uvec>::from(arma::vectorise(idx)-1);
     arma::uvec mask = arma::ones<arma::uvec>(n_alpha);
     mask.elem(uidx).zeros();
-    arma::uvec compl_uidx = arma::find(mask==1);
+    arma::uvec compl_uidx = arma::find(mask==1); 
 
-    arma::vec coef_vec = coef_List[j];
+    arma::vec coef_vec = coef_List[j]; 
     arma::vec coef_vec_full = arma::zeros(n_alpha);
     coef_vec_full(compl_uidx) = coef_vec;
     // score_summary_alpha(coef_vec_full, Y_bin, Z, vA_mat, Vinv_cube,
     //                     VY_mat, Score_reduce_alpha, Hessian_alpha);
-    score_summary_alpha(coef_vec_full, Y_bin, Z, Score_reduce_alpha, Hessian_alpha);
+    score_summary_alpha(coef_vec_full, Y_bin, Z, Score_reduce_alpha, Hessian_alpha); 
     // vA_lst[j] = vA_mat; Vinv_lst[j] = Vinv_cube; VY_lst[j] = VY_mat;
     arma::mat Score_reduce_alpha_reorg = arma::join_rows(Score_reduce_alpha.cols(uidx), Score_reduce_alpha.cols(compl_uidx));
-    arma::mat Hess_reduce_alpha_reorg = arma::join_cols(arma::join_rows(Hessian_alpha.submat(uidx, uidx),
-                                                                        Hessian_alpha.submat(uidx, compl_uidx)),
-                                                                        arma::join_rows(Hessian_alpha.submat(compl_uidx, uidx),
-                                                                                        Hessian_alpha.submat(compl_uidx, compl_uidx)));
+    arma::mat Hess_reduce_alpha_reorg = arma::join_cols(arma::join_rows(Hessian_alpha.submat(uidx, uidx), 
+                                                        Hessian_alpha.submat(uidx, compl_uidx)),
+                                                        arma::join_rows(Hessian_alpha.submat(compl_uidx, uidx), 
+                                                        Hessian_alpha.submat(compl_uidx, compl_uidx)));
 
     unsigned int n_par_interest = uidx.n_elem;
-    arma::span par_idx(0,(n_par_interest-1));
+    arma::span par_idx(0,(n_par_interest-1)); 
     arma::span compl_par_idx(n_par_interest,(n_alpha-1));
     arma::rowvec Score_reduce_rowsums = arma::sum(Score_reduce_alpha_reorg, 0);
     arma::vec A = Score_reduce_rowsums.cols(par_idx).t();
@@ -809,16 +817,17 @@ Rcpp::List score_test_stat_zero_meta(const Rcpp::List &Z_list, const Rcpp::Nulla
   arma::vec var_alpha_hat = cov_alpha_hat.diag();
   double score_stat_meta = arma::as_scalar(score_stat_alpha.t() * cov_alpha_hat * score_stat_alpha);
   if(meta_method == "RE-MetaQCAT*"){
+    if (!std::isfinite(V_theta) || V_theta <= 0) Rcpp::stop("Degenerate random-effect covariance.");
     score_stat_meta = score_stat_meta + U_theta * U_theta / V_theta;
     return Rcpp::List::create(Rcpp::Named("score.stat.meta") = score_stat_meta,
                               Rcpp::Named("var.alpha.hat") = var_alpha_hat,
                               Rcpp::Named("alpha.hat") = alpha_hat,
                               Rcpp::Named("est.alpha.lst") = est_alpha_lst,
                               Rcpp::Named("cov.lst") = cov_lst);
-    // ,
-    // Rcpp::Named("vA.lst") = vA_lst,
-    // Rcpp::Named("Vinv.lst") = Vinv_lst,
-    // Rcpp::Named("VY.lst") = VY_lst);
+                              // ,
+                              // Rcpp::Named("vA.lst") = vA_lst,
+                              // Rcpp::Named("Vinv.lst") = Vinv_lst,
+                              // Rcpp::Named("VY.lst") = VY_lst);
   }else{
     double score_pvalue = R::pchisq(score_stat_meta, n_par_interest_alpha, 0, 0);
     return Rcpp::List::create(Rcpp::Named("score.stat.meta") = score_stat_meta,
@@ -827,17 +836,17 @@ Rcpp::List score_test_stat_zero_meta(const Rcpp::List &Z_list, const Rcpp::Nulla
                               Rcpp::Named("alpha.hat") = alpha_hat,
                               Rcpp::Named("est.alpha.lst") = est_alpha_lst,
                               Rcpp::Named("cov.lst") = cov_lst);
-    // ,
-    // Rcpp::Named("vA.lst") = vA_lst,
-    // Rcpp::Named("Vinv.lst") = Vinv_lst,
-    // Rcpp::Named("VY.lst") = VY_lst);
+                              // ,
+                              // Rcpp::Named("vA.lst") = vA_lst,
+                              // Rcpp::Named("Vinv.lst") = Vinv_lst,
+                              // Rcpp::Named("VY.lst") = VY_lst);
   }
 }
 
-double score_test_stat_zero_meta_resampling(const Rcpp::List& Z_perm_list, const Rcpp::Nullable<Rcpp::List>& cluster_list,
+double score_test_stat_zero_meta_resampling(const Rcpp::List& Z_perm_list, const Rcpp::Nullable<Rcpp::List>& cluster_list, 
                                             const Rcpp::List& col_index_list, const Rcpp::List &Y_bin_list, const Rcpp::List &coef_List,
                                             const arma::vec& Z_par_index, const unsigned int n_par_interest_alpha, const std::string &meta_method){
-
+  
   //alpha.meta.results$vA.lst, alpha.meta.results$Vinv.lst, alpha.meta.results$VY.lst,
   // the total study number
   int total_num = Z_perm_list.length();
@@ -848,7 +857,7 @@ double score_test_stat_zero_meta_resampling(const Rcpp::List& Z_perm_list, const
   arma::mat est_cov_meta(n_par_interest_alpha,n_par_interest_alpha);
   est_cov_meta.zeros();
   Rcpp::List cid; bool flag = cluster_list.isNotNull();
-  if(flag){cid = cluster_list.get();}
+  if(flag){cid = cluster_list.get();}   
   // create null list to save the results for each study
   Rcpp::List score_alpha(total_num);
   Rcpp::List est_cov(total_num);
@@ -858,7 +867,7 @@ double score_test_stat_zero_meta_resampling(const Rcpp::List& Z_perm_list, const
     // arma::mat vA_mat = vA_lst[j];
     // arma::cube Vinv_cube = Vinv_lst[j];
     // arma::mat VY_mat = VY_lst[j];
-    unsigned int p = Z.n_cols;
+    unsigned int p = Z.n_cols; 
     unsigned int n = Z.n_rows;
     unsigned int m = Y_bin.n_cols;
     unsigned int n_alpha = m * p;
@@ -876,9 +885,9 @@ double score_test_stat_zero_meta_resampling(const Rcpp::List& Z_perm_list, const
     arma::uvec uidx = arma::conv_to< arma::uvec>::from(arma::vectorise(idx)-1);
     arma::uvec mask = arma::ones<arma::uvec>(n_alpha);
     mask.elem(uidx).zeros();
-    arma::uvec compl_uidx = arma::find(mask==1);
+    arma::uvec compl_uidx = arma::find(mask==1); 
 
-    arma::vec coef_vec = coef_List[j];
+    arma::vec coef_vec = coef_List[j]; 
     arma::vec coef_vec_full = arma::zeros(n_alpha);
     coef_vec_full(compl_uidx) = coef_vec;
     score_summary_alpha(coef_vec_full, Y_bin, Z, Score_reduce_alpha, Hessian_alpha);
@@ -891,13 +900,13 @@ double score_test_stat_zero_meta_resampling(const Rcpp::List& Z_perm_list, const
     //   Hessian_alpha += t_D_i * Vinv_cube.slice(i) * t_D_i.t();
     // }
     arma::mat Score_reduce_alpha_reorg = arma::join_rows(Score_reduce_alpha.cols(uidx), Score_reduce_alpha.cols(compl_uidx));
-    arma::mat Hess_reduce_alpha_reorg = arma::join_cols(arma::join_rows(Hessian_alpha.submat(uidx, uidx),
-                                                                        Hessian_alpha.submat(uidx, compl_uidx)),
-                                                                        arma::join_rows(Hessian_alpha.submat(compl_uidx, uidx),
-                                                                                        Hessian_alpha.submat(compl_uidx, compl_uidx)));
+    arma::mat Hess_reduce_alpha_reorg = arma::join_cols(arma::join_rows(Hessian_alpha.submat(uidx, uidx), 
+                                                        Hessian_alpha.submat(uidx, compl_uidx)),
+                                                        arma::join_rows(Hessian_alpha.submat(compl_uidx, uidx), 
+                                                        Hessian_alpha.submat(compl_uidx, compl_uidx)));
 
     unsigned int n_par_interest = uidx.n_elem;
-    arma::span par_idx(0,(n_par_interest-1));
+    arma::span par_idx(0,(n_par_interest-1)); 
     arma::span compl_par_idx(n_par_interest,(n_alpha-1));
     arma::rowvec Score_reduce_rowsums = arma::sum(Score_reduce_alpha_reorg, 0);
     arma::vec A = Score_reduce_rowsums.cols(par_idx).t();
@@ -929,16 +938,17 @@ double score_test_stat_zero_meta_resampling(const Rcpp::List& Z_perm_list, const
   }
   double score_stat_meta = arma::as_scalar(score_stat_alpha.t() * arma::pinv(est_cov_meta) * score_stat_alpha);
   if(meta_method == "RE-MetaQCAT*"){
+    if (!std::isfinite(V_theta) || V_theta <= 0) Rcpp::stop("Degenerate random-effect covariance.");
     score_stat_meta = score_stat_meta + U_theta * U_theta / V_theta;
   }
   return (score_stat_meta);
 }
 
 // [[Rcpp::export]]
-double resample_zero_pvalue(const Rcpp::List& Z_list, const Rcpp::Nullable<Rcpp::List>& cluster_list, const Rcpp::List& col_index_list,
+double resample_zero_pvalue(const Rcpp::List& Z_list, const Rcpp::Nullable<Rcpp::List>& cluster_list, const Rcpp::List& col_index_list, 
                             const Rcpp::List &Y_bin_list, const Rcpp::List& coef_List,
-                            const arma::vec& Z_par_index, const double score_stat_meta,
-                            const unsigned int n_par_interest_alpha, const unsigned int n_perm, const std::string &meta_method,
+                            const arma::vec& Z_par_index, const double score_stat_meta, 
+                            const unsigned int n_par_interest_alpha, const unsigned int n_perm, const std::string &meta_method, 
                             const Rcpp::Nullable<Rcpp::String> &permute_strata){
   std::string strata = permute_strata.isNotNull() ? Rcpp::as<std::string>(permute_strata) : "";
   Rcpp::List cid; bool class_flag = cluster_list.isNotNull();
@@ -949,7 +959,7 @@ double resample_zero_pvalue(const Rcpp::List& Z_list, const Rcpp::Nullable<Rcpp:
   unsigned int start_nperm = 1;
   unsigned int end_nperm = (n_perm < 100)? n_perm : 100;
   bool flag = true;
-  while(flag & (end_nperm <= n_perm)){
+  while(flag && (start_nperm <= end_nperm) && (end_nperm <= n_perm)){
     for(unsigned int k = start_nperm; k <= end_nperm; ++k){
       Rcpp::List Z_perm_list(total_num);
       if((!class_flag)||((strata != "within")&(strata != "between"))){
@@ -996,22 +1006,23 @@ double resample_zero_pvalue(const Rcpp::List& Z_list, const Rcpp::Nullable<Rcpp:
           }
         }
       }
-      double score_stat_meta_perm = score_test_stat_zero_meta_resampling(Z_perm_list, cluster_list, col_index_list, Y_bin_list,
+      double score_stat_meta_perm = score_test_stat_zero_meta_resampling(Z_perm_list, cluster_list, col_index_list, Y_bin_list, 
                                                                          coef_List, Z_par_index, n_par_interest_alpha, meta_method);
+      if (!std::isfinite(score_stat_meta_perm)) Rcpp::stop("Non-finite permutation statistic; p-value not computed.");
       n_one += 1;
       if(score_stat_meta_perm >= score_stat_meta){one_acc += 1;}
     }
     if(one_acc < 1){
       start_nperm = end_nperm + 1;
-      end_nperm = (end_nperm + 1) * 100 - 1;
+      end_nperm = std::min(n_perm, (end_nperm + 1) * 100 - 1);
       flag = true;
     }else if(one_acc < 10){
       start_nperm = end_nperm + 1;
-      end_nperm = (end_nperm + 1) * 10 - 1;
+      end_nperm = std::min(n_perm, (end_nperm + 1) * 10 - 1);
       flag = true;
     }else{flag = false;}
   }
+  if (n_one == 0) Rcpp::stop("No successful permutations; p-value not computed.");
   double score_Rpvalue = (one_acc + 1.0)/(n_one + 1.0);
   return(score_Rpvalue);
 }
-
